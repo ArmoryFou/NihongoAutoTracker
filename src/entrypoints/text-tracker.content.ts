@@ -319,6 +319,8 @@ const ttuState = new Proxy({
 });
 
 let isSyncing = false;
+let isPurgingReaderUiItems = false;
+const READER_UI_TITLES = new Set(['settings', 'library', 'history', 'profile', 'preferences']);
 
 function getTTUTitle() {
   let title = document.title;
@@ -333,6 +335,21 @@ function getTTUTitle() {
   return title.trim() || document.title;
 }
 
+function titleLooksLikeReaderUi(title = ''): boolean {
+  const normalized = title
+    .replace(/\s*\|\s*(ッツ Ebook Reader|Yatsu Reader|YomiYasu Reader)\s*/i, '')
+    .replace(/\s*[–—-]\s*ttu.*$/i, '')
+    .replace(/^YomiYasu\s*-\s*/i, '')
+    .trim()
+    .toLowerCase();
+  if (READER_UI_TITLES.has(normalized)) return true;
+
+  return normalized
+    .split(/[|•–—-]/)
+    .map((part) => part.trim())
+    .some((part) => READER_UI_TITLES.has(part));
+}
+
 function isReaderUiScreen(title = getTTUTitle()): boolean {
   const normalizedTitle = title.trim().toLowerCase();
   const path = window.location.pathname.toLowerCase();
@@ -343,12 +360,28 @@ function isReaderUiScreen(title = getTTUTitle()): boolean {
     path.includes('/settings') ||
     hash.includes('settings') ||
     search.includes('settings') ||
-    normalizedTitle === 'settings' ||
-    normalizedTitle === 'library' ||
-    normalizedTitle === 'history' ||
-    normalizedTitle === 'profile' ||
-    normalizedTitle === 'preferences'
+    titleLooksLikeReaderUi(normalizedTitle) ||
+    titleLooksLikeReaderUi(document.title)
   );
+}
+
+function isReaderUiQueueItem(item: QueuedReadingLog): boolean {
+  return [
+    item.originalTitle,
+    item.contentTitleNative,
+    item.description,
+    item.readerName ? `${item.readerName} • ${item.originalTitle || item.description || item.contentTitleNative || ''}` : '',
+  ].some((value) => titleLooksLikeReaderUi(String(value || '')));
+}
+
+async function purgeReaderUiQueueItems() {
+  if (isPurgingReaderUiItems) return;
+  isPurgingReaderUiItems = true;
+  try {
+    await updateReadingQueueAtomic((queue) => queue.filter((item) => !isReaderUiQueueItem(item)));
+  } finally {
+    isPurgingReaderUiItems = false;
+  }
 }
 
 function parseTitleWithConfig(docTitle: string) {
@@ -455,7 +488,10 @@ async function liveSyncQueue(force = false) {
 
   try {
     const rawTitle = getTTUTitle();
-    if (isReaderUiScreen(rawTitle)) return;
+    if (isReaderUiScreen(rawTitle)) {
+      await purgeReaderUiQueueItems();
+      return;
+    }
 
     const { query: parsedTitle, volume: parsedVolume } = parseTitleWithConfig(rawTitle);
     const dateStr = new Date().toISOString();
@@ -542,7 +578,10 @@ async function saveSessionAndQueue() {
   await addDebugLog('INFO', 'TextTracker', `Saving explicit TTU session`, { chars: ttuState.chars, timeMs: ttuState.timeMs });
 
   const title = getTTUTitle();
-  if (isReaderUiScreen(title)) return;
+  if (isReaderUiScreen(title)) {
+    await purgeReaderUiQueueItems();
+    return;
+  }
 
   const dateStr = new Date().toISOString();
   const sessionLog = { id: ttuState.id, date: dateStr, timeMs: ttuState.timeMs, chars: ttuState.chars };
@@ -1646,6 +1685,7 @@ export default defineContentScript({
       const readerCfg = getReaderConfig(cfg);
       if (!readerCfg.enabled) return;
       setupTTUChronometer();
+      purgeReaderUiQueueItems();
 
       ttuHistoryStorage.watch(() => {
         const wrapper = document.getElementById('nt-ttu-chrono-wrapper');
@@ -1655,6 +1695,12 @@ export default defineContentScript({
       readingQueueStorage.watch(async (queue: QueuedReadingLog[] | null) => {
         const currentQueue = queue || [];
         const rawTitle = getTTUTitle();
+        if (currentQueue.some(isReaderUiQueueItem)) {
+          await purgeReaderUiQueueItems();
+          return;
+        }
+        if (isReaderUiScreen(rawTitle)) return;
+
         const parsedRaw = parseTitleWithConfig(rawTitle).query;
 
         const linkMap = await ttuLinkStorage.getValue() || {}; // Queried exactly once per cycle to save redundant storage executions
