@@ -333,6 +333,24 @@ function getTTUTitle() {
   return title.trim() || document.title;
 }
 
+function isReaderUiScreen(title = getTTUTitle()): boolean {
+  const normalizedTitle = title.trim().toLowerCase();
+  const path = window.location.pathname.toLowerCase();
+  const hash = window.location.hash.toLowerCase();
+  const search = window.location.search.toLowerCase();
+
+  return (
+    path.includes('/settings') ||
+    hash.includes('settings') ||
+    search.includes('settings') ||
+    normalizedTitle === 'settings' ||
+    normalizedTitle === 'library' ||
+    normalizedTitle === 'history' ||
+    normalizedTitle === 'profile' ||
+    normalizedTitle === 'preferences'
+  );
+}
+
 function parseTitleWithConfig(docTitle: string) {
   return parseTitle(docTitle, currentConfig.titleRegexes);
 }
@@ -354,6 +372,12 @@ function isReadingViewActive(): boolean {
     return _readingViewCache;
   }
   const path = window.location.pathname;
+
+  if (isReaderUiScreen()) {
+    _readingViewCache = false;
+    _readingViewCacheTime = now;
+    return false;
+  }
 
   const adapter = getActiveReaderAdapter();
   if (!adapter) {
@@ -431,6 +455,8 @@ async function liveSyncQueue(force = false) {
 
   try {
     const rawTitle = getTTUTitle();
+    if (isReaderUiScreen(rawTitle)) return;
+
     const { query: parsedTitle, volume: parsedVolume } = parseTitleWithConfig(rawTitle);
     const dateStr = new Date().toISOString();
     const secs = Math.round(ttuState.timeMs / 1000);
@@ -516,6 +542,8 @@ async function saveSessionAndQueue() {
   await addDebugLog('INFO', 'TextTracker', `Saving explicit TTU session`, { chars: ttuState.chars, timeMs: ttuState.timeMs });
 
   const title = getTTUTitle();
+  if (isReaderUiScreen(title)) return;
+
   const dateStr = new Date().toISOString();
   const sessionLog = { id: ttuState.id, date: dateStr, timeMs: ttuState.timeMs, chars: ttuState.chars };
 
